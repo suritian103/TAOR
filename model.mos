@@ -1,0 +1,134 @@
+model timetable_for_first_two_weeks
+  uses "mmxprs"
+  
+  !filename := "sem1data.txt";
+  filename := "sem2data.txt";
+
+  declarations
+  nbRoom: integer
+  nbCourse: integer
+  nbweeks, nbdays, nbslots: integer
+  nbgroups: integer
+  end-declarations
+
+  initializations from filename
+  nbCourse nbRoom nbweeks nbdays nbslots nbgroups 
+  end-initializations
+
+  declarations
+  !room information
+  rooms = 1..nbRoom
+  room_name: array(rooms) of string
+  capacity: array(rooms) of integer
+  
+  !courses
+  courses = 1..nbCourse
+  num_student: array(courses) of integer
+  Course_length, Course_length_total: array(courses) of integer
+  !workshops
+  groups = 1..nbgroups
+  workshop_num_student: array(courses, groups) of integer
+  Workshop_Course_length, Workshop_Course_length_total: array(courses) of integer
+  is_weekly: array(courses) of integer
+  !time slots
+  weeks = 1..nbweeks
+  days = 1..nbdays
+  slots = 1..nbslots
+  
+  !decision variable
+  x: array(courses, rooms, weeks, days, slots) of mpvar ! x=1 if course c is taken in room r at slot t = (i,j,k)
+  y: array(courses, rooms, weeks, days, slots, groups) of mpvar ! y=1 if workshop of course c of group g in course c is taken in room r at time slot t
+  z: array(courses, rooms, weeks, days, slots) of mpvar ! z=1 if workshop c is taken in room r at slot t = (i,j,k)
+  !auxiliary variable
+  q: array(courses, rooms, weeks, days, slots) of mpvar
+  end-declarations
+
+  initializations from filename
+  room_name capacity 
+  num_student Course_length Course_length_total
+  workshop_num_student Workshop_Course_length_total is_weekly
+  end-initializations
+
+
+!=============================================================================
+!constraints
+!=============================================================================
+!x, y, z and q are binary varibles
+forall(c in courses, r in rooms, i in weeks, j in days, k in slots) x(c,r,i,j,k) is_binary
+forall(c in courses, r in rooms, i in weeks, j in days, k in slots, g in groups) y(c,r,i,j,k,g) is_binary
+forall(c in courses, r in rooms, i in weeks, j in days, k in slots) z(c,r,i,j,k) is_binary
+forall(c in courses, r in rooms, i in weeks, j in days, k in slots) q(c,r,i,j,k) is_binary
+
+!define the value of z: if sum(g in groups) y(c,r,i,j,k,g) >= 1, then z(c,r,i,j,k) = 1
+forall(c in courses, r in rooms, i in weeks, j in days, k in slots) do
+  sum(g in groups) y(c,r,i,j,k,g) <= nbgroups * (1-q(c,r,i,j,k))
+  1 - z(c,r,i,j,k) <= q(c,r,i,j,k)
+end-do
+
+!each course can only be taken in one room at one slot
+forall(c in courses, i in weeks, j in days, k in slots) sum(r in rooms) x(c,r,i,j,k) <= 1
+
+!each course should be allocated
+forall(c in courses) sum(r in rooms, i in weeks, j in days, k in slots) x(c,r,i,j,k) >= 1
+forall(c in courses, g in groups) sum(i in weeks, j in days, k in slots, r in rooms) y(c,r,i,j,k,g) >= 1
+
+!each room can only be used for ine course at a slot t
+forall(i in weeks, j in days, k in slots, r in rooms) sum(c in courses) (x(c,r,i,j,k) + z(c,r,i,j,k)) <= 1
+
+!lecture is taken in the same room at the same slot in different weeks
+forall(c in courses, r in rooms, j in days, k in slots) x(c,r,1,j,k) = x(c,r,2,j,k)
+
+!workshop is better to taken after the lecture
+forall(c in courses, r in rooms, i in weeks, j in days, k in slots) do
+    forall(m in j..nbdays) do
+      x(c,r,i,j,k) + z(c,r,i,m,k) <=1
+    end-do
+end-do
+
+!the number of students in lecture and workshop cannot exceed the room capacity
+forall(r in rooms, i in weeks, j in days, k in slots, c in courses) sum(g in groups) workshop_num_student(c,g) * y(c,r,i,j,k,g) <= capacity(r)
+forall(c in courses, r in rooms, i in weeks, j in days, k in slots) x(c,r,i,j,k) * num_student(c) <= capacity(r)
+
+!the lecture with long duration would take more than one slot
+forall(c in courses, i in weeks, j in days, k in 1..8, r in rooms | Course_length(c) = 2 ) do
+  forall(n in courses | n <> c) do
+   x(c,r,i,j,k) + x(n,r,i,j,k+1) + z(c,r,i,j,k+1) <=1
+  end-do
+end-do
+
+!the workshop with long duration would take more than one slot
+forall(c in courses,i in weeks, j in days, k in 1..8, r in rooms | Workshop_Course_length(c) = 2) do
+  forall(n in courses | n <> c) do
+    z(c,r,i,j,k) + z(n,r,i,j,k+1) + x(c,r,i,j,k+1) <= 1
+  end-do
+end-do
+
+!each course needs to meet the course total length
+forall(c in courses, i in weeks| Course_length(c) = 1) do
+ sum(r in rooms, j in days, k in slots) x(c,r,i,j,k) = Course_length_total(c)
+end-do
+forall(c in courses, i in weeks| Course_length(c) = 2) do
+  sum(r in rooms, j in days, k in slots) 2*x(c,r,i,j,k) = Course_length(c)
+end-do
+
+!each workshop needs to meet the workshop total length
+forall(c in courses) do
+ sum(r in rooms, i in weeks, j in days, k in slots)  z(c,r,i,j,k) = Workshop_Course_length_total(c)
+end-do
+
+!for workshop which needs to be taken everyweek, we require they are taken in the same slot in different weeks
+forall(c in courses | is_weekly(c) = 0) do
+  forall(r in rooms, j in days, k in slots) z(c,r,1,j,k) = z(c,r,2,j,k)
+end-do
+
+!=============================================================================
+!objective function
+!=============================================================================
+
+!try to maximize the utilization rate of classrooms
+obj := sum(c in courses, r in rooms, i in weeks, j in days, k in slots) x(c,r,i,j,k) * num_student(c) / capacity(r) + sum(c in courses, r in rooms, i in weeks, j in days, k in slots, g in groups) y(c,r,i,j,k,g) * workshop_num_student(c,g)/capacity(r)
+setparam("XPRS_MAXTIME", 10)
+maximise(obj)
+!we use the debug to get the value of variables
+end-model
+
